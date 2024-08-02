@@ -36,7 +36,7 @@ class BaseLayer(nn.Module):
     def _get_mlp(self, in_features, out_features, bias=False):
         layers = [nn.Linear(in_features, out_features, bias=bias)]
         for _ in range(self.n_fc_layers - 1):
-            layers.extend([nn.ReLU(), nn.Linear(out_features, out_features, bias=bias)])
+            layers.extend([nn.LeakyReLU(), nn.Linear(out_features, out_features, bias=bias)])
         return nn.Sequential(*layers)
 
     def _init_bias(self, row_equal, col_equal, row_dim, col_dim):
@@ -83,7 +83,6 @@ class MAB(nn.Module):
     def forward(self, Q, K):
         Q = self.fc_q(Q)
         K, V = self.fc_k(K), self.fc_v(K)
-
         dim_split = self.dim_V // self.num_heads
         Q_ = torch.cat(Q.split(dim_split, 2), 0)
         K_ = torch.cat(K.split(dim_split, 2), 0)
