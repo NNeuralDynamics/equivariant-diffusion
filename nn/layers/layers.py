@@ -53,7 +53,7 @@ class LeakyReLU(nn.Module):
 
     def forward(self, x: Tuple[Tuple[torch.tensor], Tuple[torch.tensor]]):
         weights, biases = x
-        return tuple(F.leaky_relu(t) for t in weights), tuple(F.relu(t) for t in biases)
+        return tuple(F.leaky_relu(t) for t in weights), tuple(F.leaky_relu(t) for t in biases)
 
 
 class Dropout(nn.Module):
@@ -195,6 +195,7 @@ class DWSLayer(BaseLayer):
 
     def forward(self, x: Tuple[Tuple[torch.tensor], Tuple[torch.tensor]]):
         weights, biases = x
+                
         new_weights_from_weights = self.weight_to_weight(weights)
         new_weights_from_biases = self.bias_to_weight(biases)
 
