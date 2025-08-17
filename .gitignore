@@ -1,0 +1,11 @@
+.venv/
+**/__pycache__/
+**/data/
+data/
+**/vit_models/
+results/
+checkpoints/
+checkpoints/*.pth
+src/vit_weight_canonicalization/vit_models/*.pth
+*.png
+visualizations/*.png
