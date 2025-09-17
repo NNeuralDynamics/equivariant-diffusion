@@ -542,7 +542,7 @@ class FlowMatching:
 
 
 
-def get_test_loader(batch_size=128):
+def get_test_loader(batch_size=64):
     transform_test = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465),  # CIFAR-10 mean
@@ -581,7 +581,6 @@ def print_stats(models):
     for i, model in enumerate(models):
         acc = evaluate(model)
         accuracies.append(acc)
-        logging.info(f"Model {i}: {acc:.2f}%")
 
     accuracies = np.array(accuracies)
     mean = accuracies.mean()
@@ -707,6 +706,59 @@ def recalibrate_bn_stats(model, device='cuda', print_stats=False):
     
     return model
 
+def assign_bn_stats_from_reference(model, ref_model):
+    """Copy BN stats (mean/var) from reference model0"""
+    ref_bn_layers = [m for m in ref_model.modules() if isinstance(m, nn.BatchNorm2d)]
+    tgt_bn_layers = [m for m in model.modules() if isinstance(m, nn.BatchNorm2d)]
+    assert len(ref_bn_layers) == len(tgt_bn_layers)
+    for ref_bn, tgt_bn in zip(ref_bn_layers, tgt_bn_layers):
+        tgt_bn.running_mean.data.copy_(ref_bn.running_mean.data)
+        tgt_bn.running_var.data.copy_(ref_bn.running_var.data)
+        tgt_bn.num_batches_tracked.data.copy_(ref_bn.num_batches_tracked.data)
+    return model
+
+def summarize_results(results):
+    """Pretty-print summary of accuracies across BN strategies"""
+    header = f"{'Strategy':<15} | {'Mean ± Std':<15} | {'Min':<7} | {'Max':<7}"
+    line = "-" * len(header)
+    print("\n" + line)
+    print(header)
+    print(line)
+
+    for k, v in results.items():
+        v = np.array(v)
+        mean, std = v.mean(), v.std()
+        vmin, vmax = v.min(), v.max()
+        print(f"{k:<15} | {mean:.2f} ± {std:.2f}   | {vmin:.2f}   | {vmax:.2f}")
+
+    print(line + "\n")
+
+def compare_bn_strategies(generated_models, ref_model, device='cuda'):
+    """Compare accuracy under 3 BN handling strategies"""
+    results = {"no_calibration": [], "ref_bn": [], "recalibrated": []}
+
+    for i, model in enumerate(generated_models):
+        # (1) No calibration
+        acc_no = evaluate(model.to(device), device)
+        results["no_calibration"].append(acc_no)
+
+        # (2) Reference BN assignment
+        model_refbn = copy.deepcopy(model).to(device)
+        model_refbn = assign_bn_stats_from_reference(model_refbn, ref_model)
+        acc_ref = evaluate(model_refbn, device)
+        results["ref_bn"].append(acc_ref)
+
+        # (3) Recalibrated BN
+        model_recal = copy.deepcopy(model).to(device)
+        model_recal = recalibrate_bn_stats(model_recal, device)
+        acc_recal = evaluate(model_recal, device)
+        results["recalibrated"].append(acc_recal)
+
+    for k, v in results.items():
+        logging.info(f"{k}: mean={np.mean(v):.2f} ± {np.std(v):.2f}")
+
+    return results
+
  
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -722,7 +774,7 @@ def main():
     print("weight_shapes =", weight_shapes)
     print("bias_shapes   =", bias_shapes)
 
-    batch_size = 4
+    batch_size = 8
 
     logging.info("Creating permuted model dataset using rebasin...")
     ref_point = 0
@@ -732,7 +784,7 @@ def main():
     logging.info("Permuted Models")
     print_stats(permuted_models)
 
-    for init_type in ["gaussian_0.01", "gaussian_0.001", "kaimings"]:
+    for init_type in ["gaussian_0.01"]:
         for model_type in ["with_gitrebasin", "without_rebasin"]:
             if model_type == "with_gitrebasin":
                 models_to_use = permuted_models
@@ -802,7 +854,7 @@ def main():
             cfm = train_weight_space_flow(sourceloader, targetloader, flat_dim)
         
             logging.info("Generating new weights...")
-            for gen_method in ["rk4", "euler"]:
+            for gen_method in ["rk4"]:
                 new_weights_flat = cfm.map(random_flat, n_steps=100, method=gen_method)
                 generated_models = []
         
@@ -833,13 +885,15 @@ def main():
                                 param.copy_(param_dict[name])
                 
                     # Recalibrate BN stats
-                    model = recalibrate_bn_stats(model, device)
+                    # model = recalibrate_bn_stats(model, device)
                     model = model.to(device)
                     generated_models.append(model)
                     
                 logging.info(f"Init Type: {init_type}, Model Type: {model_type}, Generation Method: {gen_method}")
                 print_stats(generated_models)
+                # results = compare_bn_strategies(generated_models, ref_model, device)
+                # summarize_results(results)
                 
 if __name__ == "__main__":
-    logging.info("CIFAR-10 Resnet20")
+    logging.info("CIFAR-10 Resnet20 embed 512")
     main()

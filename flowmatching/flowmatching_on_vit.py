@@ -21,7 +21,7 @@ import logging
 from collections import defaultdict
 import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
-from sklearn.decomposition import IncrementalPCA
+from sklearn.decomposition import PCA
 
 
 
@@ -39,54 +39,6 @@ class Bunch:
 def count_parameters(model):
     """Count trainable parameters in a model"""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-# ======================== WEIGHT SPACE OBJECTS ========================
-class WeightSpaceObject:
-    """Base class for weight space objects (MLPs)"""
-    def __init__(self, weights, biases):
-        self.weights = weights if isinstance(weights, tuple) else tuple(weights)
-        self.biases = biases if isinstance(biases, tuple) else tuple(biases)
-        
-    def flatten(self, device=None):
-        """Flatten weights and biases into a single vector"""
-        flat = torch.cat([w.flatten() for w in self.weights] + 
-                          [b.flatten() for b in self.biases])
-        if device:
-            flat = flat.to(device)
-        return flat
-    
-    @classmethod
-    def from_flat(cls, flat, layers, device):
-        """Create WeightSpaceObject from flattened vector"""
-        sizes = []
-        # Calculate sizes for weight matrices
-        for i in range(len(layers) - 1):
-            sizes.append(layers[i] * layers[i+1])  # Weight matrix
-        # Calculate sizes for bias vectors
-        for i in range(1, len(layers)):
-            sizes.append(layers[i])  # Bias vector
-            
-        # Split flat tensor into parts
-        parts = []
-        start = 0
-        for size in sizes:
-            parts.append(flat[start:start+size])
-            start += size
-            
-        # Reshape into weight matrices and bias vectors
-        weights = []
-        biases = []
-        for i in range(len(layers) - 1):
-            weights.append(parts[i].reshape(layers[i+1], layers[i]))
-            biases.append(parts[i + len(layers) - 1])
-            
-        return cls(weights, biases).to(device)
-    
-    def to(self, device):
-        """Move weights and biases to specified device"""
-        weights = tuple(w.to(device) for w in self.weights)
-        biases = tuple(b.to(device) for b in self.biases)
-        return WeightSpaceObject(weights, biases)
 
 @dataclass
 class AttentionWeights:
@@ -601,21 +553,17 @@ class VisionTransformer(nn.Module):
 
 def create_vit_small(num_classes: int = 10, **kwargs) -> VisionTransformer:
     """Create a small ViT suitable for CIFAR-10"""
-    # Set default values, but allow overrides from kwargs
-    defaults = {
-        'img_size': 32,
-        'patch_size': 4,
-        'embed_dim': 256,
-        'depth': 4,
-        'num_heads': 4,
-        'mlp_ratio': 4.0,
-        'num_classes': num_classes
-    }
     
-    # Update defaults with any provided kwargs
-    defaults.update(kwargs)
-    
-    return VisionTransformer(**defaults)
+    return VisionTransformer(
+        img_size=32,
+        patch_size=4,
+        embed_dim=192,
+        depth=6,
+        num_heads=3,
+        mlp_ratio=4,
+        num_classes=num_classes,
+        dropout=0.1
+    )
 
 # ======================== DATA LOADING ========================
 def load_cifar10(batch_size=128):
@@ -651,7 +599,6 @@ def print_stats(models, device):
     for i, model in enumerate(models):
         acc = evaluate(model, device)
         accuracies.append(acc)
-        logging.info(f"Model {i}: {acc:.2f}%")
 
     accuracies = np.array(accuracies)
     mean = accuracies.mean()
@@ -971,28 +918,6 @@ class TransFusionMatcher:
         
         return canonicalized
 
-
-class GitReBasinMatcher:
-    """
-    Alternative matcher using Git Re-Basin approach for comparison
-    """
-    
-    def __init__(self, num_iterations: int = 10):
-        self.num_iterations = num_iterations
-    
-    def match_weights(self,
-                     model1: VisionTransformerWeightSpace,
-                     model2: VisionTransformerWeightSpace) -> PermutationSpec:
-        """
-        Iterative weight matching following Git Re-Basin
-        """
-        perm_spec = PermutationSpec(len(model1.blocks))
-        
-        # Simplified implementation
-        # Would iterate through layers and compute optimal permutations
-        
-        return perm_spec
-
 class FlowMatching:
     def __init__(
         self,
@@ -1078,9 +1003,10 @@ class FlowMatching:
         """Compute vector field at point xt and time t"""
         _, pred = self.forward(Bunch(xt=xt, t=t, batch_size=xt.size(0)))
         return pred if self.mode == "velocity" else pred - xt
-
-    def train(self, n_iters=10, optimizer=None, scheduler=None, sigma=0.001, patience=1e99, log_freq=5, accum_steps=4):
-        """Train the flow model with gradient accumulation in mixed precision"""
+        
+    def train(self, n_iters=10, optimizer=None, scheduler=None, sigma=0.001, patience=1e99, 
+              log_freq=5, accum_steps=4, clip_grad=1.0):
+        """Train the flow model with gradient accumulation (no mixed precision)"""
         self.sigma = sigma
         self.metrics = {"train_loss": [], "time": [], "grad_norm": [], "flow_norm": [], "true_norm": []}
         last_loss = 1e99
@@ -1088,42 +1014,40 @@ class FlowMatching:
     
         pbar = tqdm(range(n_iters), desc="Training steps")
         optimizer.zero_grad()
-    
-        scaler = GradScaler()  # enables mixed precision
+        accum_count = 0
     
         for i in pbar:
             try:
                 flow = self.sample_time_and_flow()
     
-                with autocast(dtype=torch.float16):  # forward pass in half precision
-                    _, flow_pred = self.forward(flow)
-                    _, loss = self.loss_fn(flow_pred, flow)
+                # Forward pass
+                _, flow_pred = self.forward(flow)
+                _, loss = self.loss_fn(flow_pred, flow)
     
-                if not torch.isnan(loss) and not torch.isinf(loss):
-                    # scale loss for gradient accumulation
-                    scaler.scale(loss / accum_steps).backward()
-    
-                    if (i + 1) % accum_steps == 0:
-                        # scaler unscales gradients before clipping (if used)
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-    
-                        scaler.step(optimizer)
-                        scaler.update()
-                        optimizer.zero_grad()
-    
-                        if scheduler is not None:
-                            scheduler.step()
-    
-                    # save best model
-                    if loss.item() < self.best_loss:
-                        self.best_loss = loss.item()
-                        self.best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
-                else:
+                if torch.isnan(loss) or torch.isinf(loss):
                     logging.info(f"Skipping step {i} due to invalid loss: {loss.item()}")
                     continue
     
-                # early stopping
+                # Scale loss for gradient accumulation
+                loss_scaled = loss / accum_steps
+                loss_scaled.backward()
+                accum_count += 1
+    
+                # Step if enough accumulation or last iteration
+                if accum_count == accum_steps or i == n_iters - 1:
+                    if clip_grad is not None:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad)
+    
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    accum_count = 0
+    
+                # Save best model
+                if loss.item() < self.best_loss:
+                    self.best_loss = loss.item()
+                    self.best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+    
+                # Early stopping
                 if loss.item() > last_loss:
                     patience_count += 1
                     if patience_count >= patience:
@@ -1134,7 +1058,7 @@ class FlowMatching:
     
                 last_loss = loss.item()
     
-                # logging
+                # Logging
                 if i % log_freq == 0:
                     train_loss_val = loss.item()
                     true_tensor = flow.ut if self.mode == "velocity" else flow.x1
@@ -1150,6 +1074,7 @@ class FlowMatching:
             except Exception as e:
                 logging.info(f"Error during training iteration {i}: {str(e)}")
                 continue
+
     def get_grad_norm(self):
         total = 0
         for p in self.model.parameters():
@@ -1233,8 +1158,8 @@ class VisionTransformerFlowModel(nn.Module):
             nn.Linear(time_embed_dim, time_embed_dim)
         )
         
-        hidden_dim = min(1024, input_dim // 4) #224 without PCA
-        logging.info(f"hidden_dim:{hidden_dim}")
+        hidden_dim = 384
+        logging.info(f"hidden_dim:{hidden_dim} time_embed_dim:{time_embed_dim}")
         
         self.net = nn.Sequential(
             nn.Linear(input_dim + time_embed_dim, hidden_dim),
@@ -1262,14 +1187,14 @@ class VisionTransformerFlowModel(nn.Module):
         combined = torch.cat([x, t_embed], dim=-1)
         return self.net(combined)
 
-def get_permuted_models_data(ref_point=0, model_dir="../imagenet_vit_models", 
+def get_permuted_models_data(ref_point=0, model_dir="../cifar10_vit_small_patch4_models", 
                            num_models=100, device=None):
     """Load and align ViT models using rebasin"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     ref_model = create_vit_small()
-    ref_model_path = f"{model_dir}/vit_weights_{ref_point}.pt"
+    ref_model_path = f"{model_dir}/vit_{ref_point}.pt"
     
     try:
         ref_model.load_state_dict(torch.load(ref_model_path, map_location=device))
@@ -1284,13 +1209,13 @@ def get_permuted_models_data(ref_point=0, model_dir="../imagenet_vit_models",
     org_weight_space_objects = [ref_ws]
     
     accuracies = []
-    matcher = TransFusionMatcher(num_iterations=2)
+    matcher = TransFusionMatcher(num_iterations=10)
     
     for i in tqdm(range(num_models), desc="Processing ViT models"):
         if i == ref_point:
             continue
         
-        model_path = f"{model_dir}/vit_weights_{i}.pt"
+        model_path = f"{model_dir}/vit_{i}.pt"
         if not os.path.exists(model_path):
             logging.warning(f"Skipping model {i} - file not found")
             continue
@@ -1301,27 +1226,32 @@ def get_permuted_models_data(ref_point=0, model_dir="../imagenet_vit_models",
         
         ws = VisionTransformerWeightSpace.from_vit_model(model)
         org_weight_space_objects.append(ws)
-        accuracies.append(evaluate(model, device))
+        # org_accuracy = evaluate(model, device)
+        # accuracies.append(org_accuracy)
         
         canonicalized_list = matcher.canonicalize_model([ref_ws, ws], reference_idx=0)
         aligned_ws = canonicalized_list[1]
         
         weight_space_objects.append(aligned_ws)
-
-        torch.cuda.empty_cache()
+        
+        # new_model = create_vit_small().to(device)
+        # aligned_ws.apply_to_model(new_model)
+        # permuted_accuracy = evaluate(new_model, device)
+        # logging.info(f"Org Accuracy:{org_accuracy} Permuted accuracy:{permuted_accuracy}")
+        # torch.cuda.empty_cache()
     
     logging.info(f"Successfully processed {len(weight_space_objects)} ViT models")
     
-    logging.info("Orginal Models")
-    accuracies = np.array(accuracies)
-    mean = accuracies.mean()
-    std = accuracies.std()
-    min_acc = accuracies.min()
-    max_acc = accuracies.max()
-    logging.info("\n=== Summary ===")
-    logging.info(f"Average Accuracy: {mean:.2f}% ± {std:.2f}%")
-    logging.info(f"Min Accuracy: {min_acc:.2f}%")
-    logging.info(f"Max Accuracy: {max_acc:.2f}%")
+    # logging.info("Orginal Models")
+    # accuracies = np.array(accuracies)
+    # mean = accuracies.mean()
+    # std = accuracies.std()
+    # min_acc = accuracies.min()
+    # max_acc = accuracies.max()
+    # logging.info("\n=== Summary ===")
+    # logging.info(f"Average Accuracy: {mean:.2f}% ± {std:.2f}%")
+    # logging.info(f"Min Accuracy: {min_acc:.2f}%")
+    # logging.info(f"Max Accuracy: {max_acc:.2f}%")
     
     return ref_model, org_weight_space_objects, weight_space_objects
 
@@ -1344,215 +1274,82 @@ def generate_new_vit_models(cfm, reference_ws, vit_config, generated_flat, gen_m
     
     return generated_models
 
-def train_vit_flow_matching(vit_config=None, model_dir="../imagenet_vit_models", 
-                           num_models=100):
-    """Complete pipeline for training flow matching on ViT weights"""
-    if vit_config is None:
-        vit_config = {
-            'num_classes': 10,
-            'embed_dim': 256,
-            'depth': 4,
-            'num_heads': 4,
-            'mlp_ratio': 4.0,
-            'dropout': 0.1
-        }
-    
+
+def train_vit_flow_matching(vit_config=None, model_dir="../imagenet_vit_models", num_models=100):
+    """ViT flow matching without PCA dimensionality reduction."""
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     ref_model, org_weight_space_objects, weight_space_objects = get_permuted_models_data(
         model_dir=model_dir,
         num_models=num_models,
         device=device
     )
-    
     reference_ws = weight_space_objects[0]
 
     for init_type in ["gaussian_0.01", "gaussian_0.001"]:
         for model_type in ["with_gitrebasin", "without_rebasin"]:
-            if model_type == "with_gitrebasin":
-                models_to_use = weight_space_objects
-            else:
-                models_to_use = org_weight_space_objects
-    
+            models_to_use = weight_space_objects if model_type == "with_gitrebasin" else org_weight_space_objects
             logging.info(f"Processing {init_type} with {model_type}")
-            logging.info("Converting ViT weights to flat tensors...")
-            flat_weights = []
-            for ws in tqdm(models_to_use):
-                flat = ws.flatten(device=device)
-                flat_weights.append(flat)
-            
-            flat_target_weights = torch.stack(flat_weights)
-            flat_dim = flat_target_weights.shape[1]
-            
+            logging.info("Flattening ViT weights on CPU...")
+
+            flat_weights = [ws.flatten(device='cpu') for ws in models_to_use]
+            X = torch.stack(flat_weights)  # shape: (num_models, flat_dim)
+            flat_dim = X.shape[1]
             logging.info(f"ViT weight space dimension: {flat_dim:,}")
 
-            latent_dim = 99
-            ipca = IncrementalPCA(n_components=latent_dim, batch_size=10)
-            flat_latent = ipca.fit_transform(flat_target_weights.cpu().numpy())
-            
-            target_std = torch.std(flat_target_weights).item()
-            logging.info(f"Target std: {target_std:.6f}")
-            num_samples = 25
-            
-            if "gaussian" in init_type:
-                if init_type == "gaussian_0.01":
-                    source_std = 0.01
-                else:
-                    source_std = 0.001
-    
-                latent_tensor = torch.tensor(flat_latent, dtype=torch.float32)
-                source_tensor = torch.randn_like(latent_tensor) * source_std 
-                random_flat = torch.randn(num_models, latent_dim, device=device) * source_std
-    
-            elif init_type == "kaimings":
-                flat_source_weights = []
-                for ws in models_to_use:
-                    patch_weight = ws.patch_embed_weight
-                    fan_in = patch_weight.shape[1] * patch_weight.shape[2] * patch_weight.shape[3]  # Conv2d fan_in
-                    std = np.sqrt(2.0 / fan_in)
-                    new_patch_weight = torch.randn_like(patch_weight) * std
-                    new_patch_bias = torch.zeros_like(ws.patch_embed_bias) if ws.patch_embed_bias is not None else None
-                    
-                    # CLS token and position embeddings - use small random init
-                    new_cls_token = torch.randn_like(ws.cls_token) * 0.02
-                    new_pos_embed = torch.randn_like(ws.pos_embed) * 0.02
-                    
-                    # Initialize blocks
-                    new_blocks = []
-                    for block in ws.blocks:
-                        # Attention weights
-                        qkv_weight = block.attention.qkv_weight
-                        fan_in = qkv_weight.shape[1]
-                        std = np.sqrt(2.0 / fan_in)
-                        new_qkv_weight = torch.randn_like(qkv_weight) * std
-                        new_qkv_bias = torch.zeros_like(block.attention.qkv_bias) if block.attention.qkv_bias is not None else None
-                        
-                        proj_weight = block.attention.proj_weight
-                        fan_in = proj_weight.shape[1]
-                        std = np.sqrt(2.0 / fan_in)
-                        new_proj_weight = torch.randn_like(proj_weight) * std
-                        new_proj_bias = torch.zeros_like(block.attention.proj_bias) if block.attention.proj_bias is not None else None
-                        
-                        new_attention = AttentionWeights(
-                            qkv_weight=new_qkv_weight,
-                            qkv_bias=new_qkv_bias,
-                            proj_weight=new_proj_weight,
-                            proj_bias=new_proj_bias,
-                            num_heads=block.attention.num_heads
-                        )
-                        
-                        # MLP weights
-                        new_mlp_weights = []
-                        new_mlp_biases = []
-                        for mlp_weight in block.mlp_weights:
-                            fan_in = mlp_weight.shape[1] if len(mlp_weight.shape) > 1 else 1
-                            std = np.sqrt(2.0 / fan_in)
-                            new_mlp_weights.append(torch.randn_like(mlp_weight) * std)
-                        
-                        for mlp_bias in block.mlp_biases:
-                            new_mlp_biases.append(torch.zeros_like(mlp_bias))
-                        
-                        # Layer norm weights (initialize to 1 and 0)
-                        new_norm1_weight = torch.ones_like(block.norm1_weight)
-                        new_norm1_bias = torch.zeros_like(block.norm1_bias)
-                        new_norm2_weight = torch.ones_like(block.norm2_weight)
-                        new_norm2_bias = torch.zeros_like(block.norm2_bias)
-                        
-                        new_block = TransformerBlockWeights(
-                            attention=new_attention,
-                            norm1_weight=new_norm1_weight,
-                            norm1_bias=new_norm1_bias,
-                            mlp_weights=tuple(new_mlp_weights),
-                            mlp_biases=tuple(new_mlp_biases),
-                            norm2_weight=new_norm2_weight,
-                            norm2_bias=new_norm2_bias
-                        )
-                        new_blocks.append(new_block)
-                    
-                    # Final norm and head
-                    new_norm_weight = torch.ones_like(ws.norm_weight)
-                    new_norm_bias = torch.zeros_like(ws.norm_bias)
-                    
-                    head_weight = ws.head_weight
-                    fan_in = head_weight.shape[1]
-                    std = np.sqrt(2.0 / fan_in)
-                    new_head_weight = torch.randn_like(head_weight) * std
-                    new_head_bias = torch.zeros_like(ws.head_bias)
-                    
-                    # Create new weight space object
-                    new_ws = VisionTransformerWeightSpace(
-                        patch_embed_weight=new_patch_weight,
-                        patch_embed_bias=new_patch_bias,
-                        cls_token=new_cls_token,
-                        pos_embed=new_pos_embed,
-                        blocks=new_blocks,
-                        norm_weight=new_norm_weight,
-                        norm_bias=new_norm_bias,
-                        head_weight=new_head_weight,
-                        head_bias=new_head_bias
-                    )
-                    
-                    flat_source_weights.append(new_ws.flatten(device))
-                
-                flat_source_weights = torch.stack(flat_source_weights)
-                
-                kaiming_std = 0.02
-                random_flat = torch.randn(num_samples, flat_dim, device=device) * kaiming_std
-    
-            else:
-                raise ValueError(f"Unknown init_type: {init_type}")
-            
+            del flat_weights
+            torch.cuda.empty_cache()
+
+            source_std = 0.01 if "0.01" in init_type else 0.001
+            source_tensor = torch.randn(num_models, flat_dim, dtype=torch.float32) * source_std
+
+            target_tensor = X
             source_dataset = TensorDataset(source_tensor)
-            target_dataset = TensorDataset(latent_tensor)
-            
-            sourceloader = DataLoader(source_dataset, batch_size=2, shuffle=True)
-            targetloader = DataLoader(target_dataset, batch_size=2, shuffle=True)
-                    
-            flow_model = VisionTransformerFlowModel(latent_dim).to(device)
+            target_dataset = TensorDataset(target_tensor)
+
+            sourceloader = DataLoader(source_dataset, batch_size=1, shuffle=True, pin_memory=True)
+            targetloader = DataLoader(target_dataset, batch_size=1, shuffle=True, pin_memory=True)
+
+            flow_model = VisionTransformerFlowModel(flat_dim).to(device)
             logging.info(f"Flow model parameters: {count_parameters(flow_model):,}")
-            
-            t_dist = "uniform"
-            logging.info(f"t_dist type:{t_dist}")
+
             cfm = FlowMatching(
                 sourceloader=sourceloader,
                 targetloader=targetloader,
                 model=flow_model,
                 mode="velocity",
-                t_dist=t_dist, 
+                t_dist="uniform",
                 device=device
             )
-            
-            optimizer = torch.optim.AdamW(
-                flow_model.parameters(), 
-                lr=1e-4,
-                weight_decay=1e-5,
-                betas=(0.9, 0.95)
-            )
-            
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=30000, eta_min=1e-6
-            )
-            
-            cfm.train(
-                n_iters=30000,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                sigma=0.001, 
-                patience=100, 
-                log_freq=10
-            )
+
+            optimizer = torch.optim.AdamW(flow_model.parameters(), lr=1e-4, weight_decay=1e-5, betas=(0.9, 0.95))
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=30000, eta_min=1e-6)
+
+            cfm.train(n_iters=30000, optimizer=optimizer, scheduler=scheduler, sigma=0.001, patience=100, log_freq=10)
 
             logging.info("Generating new weights...")
-            for gen_method in ["rk4", "euler"]:
-                generated_latent = cfm.map(random_flat, n_steps=100, method=gen_method).cpu().numpy()
-                generated_flat = ipca.inverse_transform(generated_latent)
-                generated_flat = torch.tensor(generated_flat, dtype=torch.float32, device=device)
+            for gen_method in ["rk4"]:
+                random_flat = torch.randn(num_models, flat_dim, dtype=torch.float32) * source_std
+
+                generated_chunks = []
+                chunk_size = 5  # or whatever fits in GPU memory
+                for i in range(0, num_models, chunk_size):
+                    batch = random_flat[i:i+chunk_size].to(device)
+                    gen = cfm.map(batch, n_steps=100, method=gen_method)
+                    generated_chunks.append(gen.cpu())
+                generated_flat = torch.cat(generated_chunks, dim=0)
+
 
                 generated_models = generate_new_vit_models(
-                    cfm, reference_ws, vit_config, generated_flat, gen_method, num_samples
+                    cfm, reference_ws, vit_config, generated_flat, gen_method, n_samples=25
                 )
+
                 logging.info(f"Init Type: {init_type}, Model Type: {model_type}, Generation Method: {gen_method}")
                 print_stats(generated_models, device)
+
+            del flow_model, cfm, random_flat, generated_flat, generated_models
+            torch.cuda.empty_cache()
 
 
 def main():
@@ -1561,9 +1358,9 @@ def main():
     
     vit_config = {
         'num_classes': 10,
-        'embed_dim': 256,
-        'depth': 4,
-        'num_heads': 4,
+        'embed_dim': 192,
+        'depth': 6,
+        'num_heads': 3,
         'mlp_ratio': 4.0,
         'dropout': 0.1
     }
@@ -1575,9 +1372,9 @@ def main():
     
     train_vit_flow_matching(
         vit_config=vit_config,
-        model_dir="../imagenet_vit_models",
+        model_dir="../cifar10_vit_small_patch4_models",
         num_models=100
     )   
 if __name__ == "__main__":
-    logging.info("CIFAR-10 ViT With PCA")
+    logging.info("CIFAR-10 New ViT embed 384 time 64")
     main()

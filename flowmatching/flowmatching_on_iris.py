@@ -452,7 +452,7 @@ class WeightSpaceFlowModel(nn.Module):
             nn.Linear(time_embed_dim, time_embed_dim)
         )
         
-        hidden_dim = min(1024, input_dim // 4)
+        hidden_dim = min(512, input_dim // 4)
         
         self.net = nn.Sequential(
             nn.Linear(input_dim + time_embed_dim, hidden_dim),
@@ -517,7 +517,7 @@ def print_stats(models):
 
 def main():
     layer_layout = [4, 16, 3]
-    batch_size = 4
+    batch_size = 8
     
     logging.basicConfig(level=logging.INFO)
     logging.info("Creating permuted model dataset using rebasin...")
@@ -528,7 +528,7 @@ def main():
     logging.info("Permuted Models")
     print_stats(permuted_models)
 
-    for init_type in ["gaussian_0.01", "gaussian_0.001", "kaimings"]:
+    for init_type in ["gaussian_0.01"]:
         for model_type in ["with_gitrebasin", "without_rebasin"]:
             if model_type == "with_gitrebasin":
                 models_to_use = permuted_models
@@ -652,7 +652,7 @@ def main():
             
             logging.info("Generating new MLP weights...")
             
-            for gen_method in ["rk4", "euler"]:
+            for gen_method in ["rk4"]:
                 new_weights_flat = cfm.map(random_flat, n_steps=100, method=gen_method)
                 
                 logging.info("Testing generated models...")
@@ -687,5 +687,5 @@ def main():
         
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    logging.info("MLP - Iris MLP")
+    logging.info("MLP - Iris MLP embed 512")
     main()

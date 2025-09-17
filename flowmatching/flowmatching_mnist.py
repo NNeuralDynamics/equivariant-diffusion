@@ -21,8 +21,296 @@ from collections import defaultdict
 import os
 import traceback
 
+
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial.distance import cdist
+from scipy.stats import entropy
+import matplotlib.pyplot as plt
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(stream=sys.stdout, format='%(asctime)s %(levelname)s: %(message)s', level=logging.INFO, datefmt='%I:%M:%S')
+
+# Memorization Evaluation part
+def pca_visualization(original_models, generated_models, device='cuda', n_components=2, method = ""):
+    """
+    Apply PCA to original vs generated models and plot.
+    """
+    # Flatten weights
+    def flatten_models(models):
+        flats = []
+        for m in models:
+            weights = (
+                m.fc1.weight.data.clone(),
+                m.fc2.weight.data.clone(),
+                m.fc3.weight.data.clone()
+            )
+            biases = (
+                m.fc1.bias.data.clone(),
+                m.fc2.bias.data.clone(),
+                m.fc3.bias.data.clone()
+            )
+            flat = torch.cat([w.flatten() for w in weights] + [b.flatten() for b in biases])
+            flats.append(flat.cpu().numpy())
+        return np.stack(flats)
+    
+    orig_flat = flatten_models(original_models)
+    gen_flat = flatten_models(generated_models)
+    
+    # Standardize before PCA
+    scaler = StandardScaler()
+    all_flat = np.vstack([orig_flat, gen_flat])
+    all_flat_scaled = scaler.fit_transform(all_flat)
+    
+    # PCA
+    pca = PCA(n_components=n_components)
+    pca_result = pca.fit_transform(all_flat_scaled)
+    
+    orig_pca = pca_result[:len(orig_flat)]
+    gen_pca = pca_result[len(orig_flat):]
+    
+    # Plot
+    plt.figure(figsize=(6,6))
+    plt.scatter(gen_pca[:,0], gen_pca[:,1], c='red', label='Generated', alpha=0.6)
+    plt.scatter(orig_pca[:,0], orig_pca[:,1], c='blue', label='Original', alpha=0.6)
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
+    plt.title(f"PCA Method:{method} Org:{len(orig_flat)} Generated:{len(gen_flat)}")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"PCA check method:{method}_1000.png")
+    
+    return orig_pca, gen_pca
+
+from sklearn.manifold import TSNE
+
+def tsne_visualization(original_models, generated_models, device='cuda', n_components=2, method=""):
+    """
+    Apply t-SNE to original vs generated models and plot.
+    """
+    # Flatten weights
+    def flatten_models(models):
+        flats = []
+        for m in models:
+            weights = (
+                m.fc1.weight.data.clone(),
+                m.fc2.weight.data.clone(),
+                m.fc3.weight.data.clone()
+            )
+            biases = (
+                m.fc1.bias.data.clone(),
+                m.fc2.bias.data.clone(),
+                m.fc3.bias.data.clone()
+            )
+            flat = torch.cat([w.flatten() for w in weights] + [b.flatten() for b in biases])
+            flats.append(flat.cpu().numpy())
+        return np.stack(flats)
+    
+    orig_flat = flatten_models(original_models)
+    gen_flat = flatten_models(generated_models)
+    
+    # Standardize
+    scaler = StandardScaler()
+    all_flat = np.vstack([orig_flat, gen_flat])
+    all_flat_scaled = scaler.fit_transform(all_flat)
+    
+    # t-SNE
+    tsne = TSNE(n_components=n_components, init='pca', random_state=42, learning_rate='auto')
+    tsne_result = tsne.fit_transform(all_flat_scaled)
+    
+    orig_tsne = tsne_result[:len(orig_flat)]
+    gen_tsne = tsne_result[len(orig_flat):]
+    
+    # Plot
+    plt.figure(figsize=(6,6))
+    plt.scatter(gen_tsne[:,0], gen_tsne[:,1], c='red', label='Generated', alpha=0.6)
+    plt.scatter(orig_tsne[:,0], orig_tsne[:,1], c='blue', label='Original', alpha=0.6)
+    plt.xlabel("t-SNE1")
+    plt.ylabel("t-SNE2")
+    plt.title(f"t-SNE of Method:{method} Org:{len(orig_flat)} Generated:{len(gen_flat)}")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"tSNE_check_method_{method}_1000.png")
+    
+    return orig_tsne, gen_tsne
+
+def nearest_neighbor_check(original_models, generated_models, device='cuda', num_bins=100, plot=True):
+    """
+    Compare distance distributions between original and generated models.
+    Computes three types of nearest-neighbor distances:
+    1. Original to other originals
+    2. Generated to other generated  
+    3. Original to generated (and vice versa)
+    """
+    def flatten_models(models):
+        """Flatten model weights - adapt this for ViT models"""
+        flats = []
+        for m in models:
+            # For ViT models, you'll need to extract weights differently
+            # This is a placeholder - modify based on your VisionTransformerWeightSpace
+            if hasattr(m, 'patch_embed'):  # ViT model
+                ws = VisionTransformerWeightSpace.from_vit_model(m)
+                flat = ws.flatten(device='cpu')
+                flats.append(flat.numpy())
+            else:  # Simple MLP
+                weights = (
+                    m.fc1.weight.data.clone(),
+                    m.fc2.weight.data.clone(), 
+                    m.fc3.weight.data.clone()
+                )
+                biases = (
+                    m.fc1.bias.data.clone(),
+                    m.fc2.bias.data.clone(),
+                    m.fc3.bias.data.clone()
+                )
+                flat = torch.cat([w.flatten() for w in weights] + [b.flatten() for b in biases])
+                flats.append(flat.cpu().numpy())
+        return np.stack(flats)
+
+    orig_flat = flatten_models(original_models)
+    gen_flat = flatten_models(generated_models)
+
+    print(f"Num Models - Original: {len(orig_flat)}, Generated: {len(gen_flat)}")
+    
+    # --- Compute all pairwise distances ---
+    # Within original models
+    orig_to_orig_distances = cdist(orig_flat, orig_flat, metric='euclidean')
+    # Within generated models  
+    gen_to_gen_distances = cdist(gen_flat, gen_flat, metric='euclidean')
+    # Between original and generated
+    orig_to_gen_distances = cdist(orig_flat, gen_flat, metric='euclidean')
+    gen_to_orig_distances = orig_to_gen_distances.T  # Transpose for gen->orig
+    
+    # --- Extract nearest neighbor distances ---
+    # 1. Original to other originals (excluding self)
+    np.fill_diagonal(orig_to_orig_distances, np.inf)  # Exclude self
+    nn_orig_to_orig = orig_to_orig_distances.min(axis=1)
+    
+    # 2. Generated to other generated (excluding self)
+    np.fill_diagonal(gen_to_gen_distances, np.inf)  # Exclude self
+    nn_gen_to_gen = gen_to_gen_distances.min(axis=1)
+    
+    # 3. Original to nearest generated
+    nn_orig_to_gen = orig_to_gen_distances.min(axis=1)
+    
+    # 4. Generated to nearest original
+    nn_gen_to_orig = gen_to_orig_distances.min(axis=1)
+    
+    # --- Print statistics ---
+    print("\n=== Nearest Neighbor Distance Statistics ===")
+    print(f"Original → Original (mean ± std): {nn_orig_to_orig.mean():.4f} ± {nn_orig_to_orig.std():.4f}")
+    print(f"Generated → Generated (mean ± std): {nn_gen_to_gen.mean():.4f} ± {nn_gen_to_gen.std():.4f}")
+    print(f"Original → Generated (mean ± std): {nn_orig_to_gen.mean():.4f} ± {nn_orig_to_gen.std():.4f}")
+    print(f"Generated → Original (mean ± std): {nn_gen_to_orig.mean():.4f} ± {nn_gen_to_orig.std():.4f}")
+    
+    # --- Compute histograms ---
+    all_distances = np.concatenate([
+        nn_orig_to_orig, nn_gen_to_gen, 
+        nn_orig_to_gen, nn_gen_to_orig
+    ])
+    min_d, max_d = all_distances.min(), all_distances.max()
+    bins = np.linspace(min_d, max_d, num_bins + 1)
+    
+    hist_orig_orig, _ = np.histogram(nn_orig_to_orig, bins=bins, density=True)
+    hist_gen_gen, _ = np.histogram(nn_gen_to_gen, bins=bins, density=True)
+    hist_orig_gen, _ = np.histogram(nn_orig_to_gen, bins=bins, density=True)
+    hist_gen_orig, _ = np.histogram(nn_gen_to_orig, bins=bins, density=True)
+    
+    # --- KL divergences ---
+    from scipy.stats import entropy
+    
+    print("\n=== KL Divergences (using Original→Original as reference) ===")
+    kl_gen_gen = entropy(hist_orig_orig + 1e-12, hist_gen_gen + 1e-12)
+    kl_orig_gen = entropy(hist_orig_orig + 1e-12, hist_orig_gen + 1e-12)
+    kl_gen_orig = entropy(hist_orig_orig + 1e-12, hist_gen_orig + 1e-12)
+    
+    print(f"KL(Orig→Orig || Gen→Gen): {kl_gen_gen:.4f}")
+    print(f"KL(Orig→Orig || Orig→Gen): {kl_orig_gen:.4f}")
+    print(f"KL(Orig→Orig || Gen→Orig): {kl_gen_orig:.4f}")
+    
+    # --- IOU scores ---
+    print("\n=== IOU Scores (with Original→Original) ===")
+    iou_gen_gen = np.sum(np.minimum(hist_orig_orig, hist_gen_gen)) / np.sum(np.maximum(hist_orig_orig, hist_gen_gen))
+    iou_orig_gen = np.sum(np.minimum(hist_orig_orig, hist_orig_gen)) / np.sum(np.maximum(hist_orig_orig, hist_orig_gen))
+    iou_gen_orig = np.sum(np.minimum(hist_orig_orig, hist_gen_orig)) / np.sum(np.maximum(hist_orig_orig, hist_gen_orig))
+    
+    print(f"IOU(Orig→Orig, Gen→Gen): {iou_gen_gen:.4f}")
+    print(f"IOU(Orig→Orig, Orig→Gen): {iou_orig_gen:.4f}")
+    print(f"IOU(Orig→Orig, Gen→Orig): {iou_gen_orig:.4f}")
+    
+    if plot:
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(15, 10))
+        
+        # --- Plot 1: All nearest neighbor distributions ---
+        plt.subplot(2, 2, 1)
+        bin_centers = (bins[:-1] + bins[1:]) / 2
+        plt.plot(bin_centers, hist_orig_orig, 'b-', alpha=0.7, label="Original→Original", linewidth=2)
+        plt.plot(bin_centers, hist_gen_gen, 'r-', alpha=0.7, label="Generated→Generated", linewidth=2)
+        plt.plot(bin_centers, hist_orig_gen, 'g-', alpha=0.7, label="Original→Generated", linewidth=2)
+        plt.plot(bin_centers, hist_gen_orig, 'm-', alpha=0.7, label="Generated→Original", linewidth=2)
+        plt.xlabel("Distance")
+        plt.ylabel("Density")
+        plt.title("All Nearest Neighbor Distances")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # --- Plot 2: Within-distribution comparison ---
+        plt.subplot(2, 2, 2)
+        plt.hist(nn_orig_to_orig, bins=50, alpha=0.5, label="Original→Original", density=True, color='blue')
+        plt.hist(nn_gen_to_gen, bins=50, alpha=0.5, label="Generated→Generated", density=True, color='red')
+        plt.xlabel("Distance")
+        plt.ylabel("Density")
+        plt.title("Within-Distribution Nearest Neighbors")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # --- Plot 3: Cross-distribution comparison ---
+        plt.subplot(2, 2, 3)
+        plt.hist(nn_orig_to_gen, bins=50, alpha=0.5, label="Original→Generated", density=True, color='green')
+        plt.hist(nn_gen_to_orig, bins=50, alpha=0.5, label="Generated→Original", density=True, color='magenta')
+        plt.xlabel("Distance")
+        plt.ylabel("Density")
+        plt.title("Cross-Distribution Nearest Neighbors")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # --- Plot 4: Box plot comparison ---
+        plt.subplot(2, 2, 4)
+        data_to_plot = [nn_orig_to_orig, nn_gen_to_gen, nn_orig_to_gen, nn_gen_to_orig]
+        labels = ['Orig→Orig', 'Gen→Gen', 'Orig→Gen', 'Gen→Orig']
+        bp = plt.boxplot(data_to_plot, labels=labels, patch_artist=True)
+        colors = ['blue', 'red', 'green', 'magenta']
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.5)
+        plt.ylabel("Distance")
+        plt.title("Distance Distribution Summary")
+        plt.grid(True, alpha=0.3, axis='y')
+        
+        plt.tight_layout()
+        plt.savefig("vit_nearest_neighbor_analysis.png", dpi=150, bbox_inches='tight')
+    
+    return {
+        "nn_orig_to_orig": nn_orig_to_orig,
+        "nn_gen_to_gen": nn_gen_to_gen,
+        "nn_orig_to_gen": nn_orig_to_gen,
+        "nn_gen_to_orig": nn_gen_to_orig,
+        "kl_gen_gen": kl_gen_gen,
+        "kl_orig_gen": kl_orig_gen,
+        "kl_gen_orig": kl_gen_orig,
+        "iou_gen_gen": iou_gen_gen,
+        "iou_orig_gen": iou_orig_gen,
+        "iou_gen_orig": iou_gen_orig,
+        "hist_orig_orig": hist_orig_orig,
+        "hist_gen_gen": hist_gen_gen,
+        "hist_orig_gen": hist_orig_gen,
+        "hist_gen_orig": hist_gen_orig,
+        "bins": bins
+    }
+
 
 class MLP(nn.Module):
     def __init__(self, init_type='xavier', seed=None):
@@ -527,7 +815,7 @@ def count_parameters(model):
 
 def main():
     layer_layout = [784, 32, 32, 10]
-    batch_size = 4
+    batch_size = 8
     
     transform = transforms.Compose([transforms.ToTensor()])
     test_data = datasets.MNIST(root="data", train=False, download=True, transform=transform)
@@ -542,7 +830,7 @@ def main():
     logging.info("Permuted Models")
     print_stats(permuted_models, test_loader)
 
-    for init_type in ["gaussian_0.01", "gaussian_0.001"]:
+    for init_type in ["gaussian_0.01"]:
         for model_type in ["with_gitrebasin", "without_rebasin"]:
             if model_type == "with_gitrebasin":
                 models_to_use = permuted_models
@@ -573,7 +861,7 @@ def main():
             flat_target_weights = torch.stack([wso.flatten(device) for wso in weights_list])
             flat_dim = flat_target_weights.shape[1]
             
-            n_samples = 25
+            n_samples = 100
             
             if "gaussian" in init_type:
                 if init_type == "gaussian_0.01":
@@ -689,7 +977,11 @@ def main():
                     
                 logging.info(f"Init Type: {init_type}, Model Type: {model_type}, Generation Method: {gen_method}")
                 print_stats(generated_models, test_loader)
+
+                # orig_pca, gen_pca = pca_visualization(models_to_use, generated_models, device=device, method = model_type)
+                # tsne_visualization(models_to_use, generated_models, device=device, method = model_type)
+                # nn_distances = nearest_neighbor_check(models_to_use, generated_models, device=device)
         
 if __name__ == "__main__":
-    logging.info("MLP - MNIST")
+    logging.info("MLP - MNIST embed 512")
     main()

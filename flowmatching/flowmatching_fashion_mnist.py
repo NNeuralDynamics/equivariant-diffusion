@@ -527,7 +527,7 @@ def count_parameters(model):
 
 def main():
     layer_layout = [784, 128, 128, 10]
-    batch_size = 4
+    batch_size = 8
     
     transform = transforms.Compose([transforms.ToTensor()])
     test_data = datasets.FashionMNIST(root="data", train=False, download=True, transform=transform)
@@ -542,7 +542,7 @@ def main():
     logging.info("Permuted Models")
     print_stats(permuted_models, test_loader)
 
-    for init_type in ["gaussian_0.01", "gaussian_0.001"]:
+    for init_type in ["gaussian_0.01"]:
         for model_type in ["with_gitrebasin", "without_rebasin"]:
             if model_type == "with_gitrebasin":
                 models_to_use = permuted_models
@@ -691,5 +691,5 @@ def main():
                 print_stats(generated_models, test_loader)
         
 if __name__ == "__main__":
-    logging.info("MLP - Fashion MNIST")
+    logging.info("MLP - Fashion MNIST embed 512")
     main()
