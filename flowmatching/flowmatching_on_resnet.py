@@ -643,8 +643,7 @@ def train_weight_space_flow(sourceloader, targetloader, input_dim):
     
     flow_model = WeightSpaceFlowModel(input_dim).to(device)
     
-    t_dist = "beta"
-    logging.info(f"t_dist type:{t_dist}")
+    t_dist = "uniform"
     cfm = FlowMatching(
         sourceloader=sourceloader,
         targetloader=targetloader,
@@ -656,7 +655,7 @@ def train_weight_space_flow(sourceloader, targetloader, input_dim):
     
     optimizer = torch.optim.AdamW(
         flow_model.parameters(), 
-        lr=1e-4,
+        lr=5e-4,
         weight_decay=1e-5,
         betas=(0.9, 0.95)
     )
@@ -885,7 +884,7 @@ def main():
                                 param.copy_(param_dict[name])
                 
                     # Recalibrate BN stats
-                    # model = recalibrate_bn_stats(model, device)
+                    model = recalibrate_bn_stats(model, device)
                     model = model.to(device)
                     generated_models.append(model)
                     
