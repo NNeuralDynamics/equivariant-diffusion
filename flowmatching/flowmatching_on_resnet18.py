@@ -624,8 +624,7 @@ def train_weight_space_flow(sourceloader, targetloader, input_dim):
     
     flow_model = WeightSpaceFlowModel(input_dim).to(device)
     
-    t_dist = "beta"
-    logging.info(f"t_dist type:{t_dist}")
+    t_dist = "uniform"
     cfm = FlowMatching(
         sourceloader=sourceloader,
         targetloader=targetloader,
@@ -637,7 +636,7 @@ def train_weight_space_flow(sourceloader, targetloader, input_dim):
     
     optimizer = torch.optim.AdamW(
         flow_model.parameters(), 
-        lr=1e-4,
+        lr=5e-4,
         weight_decay=1e-5,
         betas=(0.9, 0.95)
     )
@@ -875,16 +874,16 @@ def main():
                                 param.copy_(param_dict[name])
                 
                     # Recalibrate BN stats
-                    # model = recalibrate_bn_stats(model, device)
+                    model = recalibrate_bn_stats(model, device)
                     model = model.to(device)
                     generated_models.append(model)
                     del model
                     
-                # logging.info(f"Init Type: {init_type}, Model Type: {model_type}, Generation Method: {gen_method}")
-                # print_stats(generated_models)
+                logging.info(f"Init Type: {init_type}, Model Type: {model_type}, Generation Method: {gen_method}")
+                print_stats(generated_models)
 
-                results = compare_bn_strategies(generated_models, ref_model, device)
-                summarize_results(results)
+                # results = compare_bn_strategies(generated_models, ref_model, device)
+                # summarize_results(results)
                 
 if __name__ == "__main__":
     logging.info("CIFAR-10 Resnet18 embed 1024 time 128")
