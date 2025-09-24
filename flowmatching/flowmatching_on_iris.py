@@ -452,18 +452,18 @@ class WeightSpaceFlowModel(nn.Module):
             nn.Linear(time_embed_dim, time_embed_dim)
         )
         
-        hidden_dim = min(512, input_dim // 4)
+        hidden_dim = 128
         
         self.net = nn.Sequential(
             nn.Linear(input_dim + time_embed_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.4),
             
             nn.Linear(hidden_dim, hidden_dim//2),
             nn.LayerNorm(hidden_dim//2), 
             nn.GELU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.4),
             
             nn.Linear(hidden_dim//2, hidden_dim),
             nn.LayerNorm(hidden_dim),
