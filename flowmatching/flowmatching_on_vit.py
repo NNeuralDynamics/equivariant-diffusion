@@ -1147,7 +1147,7 @@ class FlowMatching:
 class VisionTransformerFlowModel(nn.Module):
     """Flow model for ViT weight spaces"""
     
-    def __init__(self, input_dim, time_embed_dim=64):
+    def __init__(self, input_dim, time_embed_dim=64, hidden_dim = 256):
         super().__init__()
         self.input_dim = input_dim
         self.time_embed_dim = time_embed_dim
@@ -1157,9 +1157,6 @@ class VisionTransformerFlowModel(nn.Module):
             nn.GELU(),
             nn.Linear(time_embed_dim, time_embed_dim)
         )
-        
-        hidden_dim = 384
-        logging.info(f"hidden_dim:{hidden_dim} time_embed_dim:{time_embed_dim}")
         
         self.net = nn.Sequential(
             nn.Linear(input_dim + time_embed_dim, hidden_dim),
@@ -1294,7 +1291,7 @@ def train_vit_flow_matching(vit_config=None, model_dir="../imagenet_vit_models",
             logging.info("Flattening ViT weights on CPU...")
 
             flat_weights = [ws.flatten(device='cpu') for ws in models_to_use]
-            X = torch.stack(flat_weights)  # shape: (num_models, flat_dim)
+            X = torch.stack(flat_weights)
             flat_dim = X.shape[1]
             logging.info(f"ViT weight space dimension: {flat_dim:,}")
 
@@ -1323,7 +1320,7 @@ def train_vit_flow_matching(vit_config=None, model_dir="../imagenet_vit_models",
                 device=device
             )
 
-            optimizer = torch.optim.AdamW(flow_model.parameters(), lr=1e-4, weight_decay=1e-5, betas=(0.9, 0.95))
+            optimizer = torch.optim.AdamW(flow_model.parameters(), lr=5e-4, weight_decay=1e-5, betas=(0.9, 0.95))
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=30000, eta_min=1e-6)
 
             cfm.train(n_iters=30000, optimizer=optimizer, scheduler=scheduler, sigma=0.001, patience=100, log_freq=10)
@@ -1333,7 +1330,7 @@ def train_vit_flow_matching(vit_config=None, model_dir="../imagenet_vit_models",
                 random_flat = torch.randn(num_models, flat_dim, dtype=torch.float32) * source_std
 
                 generated_chunks = []
-                chunk_size = 5  # or whatever fits in GPU memory
+                chunk_size = 5 
                 for i in range(0, num_models, chunk_size):
                     batch = random_flat[i:i+chunk_size].to(device)
                     gen = cfm.map(batch, n_steps=100, method=gen_method)
@@ -1368,7 +1365,7 @@ def main():
     logging.info(f"Using ViT config: {vit_config}")
     
     logging.info("Testing model creation...")
-    test_model = create_vit_small(**vit_config)
+    test_model = create_vit_small()
     
     train_vit_flow_matching(
         vit_config=vit_config,
