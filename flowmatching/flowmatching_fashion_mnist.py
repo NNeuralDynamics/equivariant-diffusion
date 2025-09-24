@@ -616,8 +616,7 @@ def main():
             flow_model = WeightSpaceFlowModel(flat_dim).to(device)
             flow_model.train()
             
-            t_dist = "beta"
-            logging.info(f"t_dist type:{t_dist}")
+            t_dist = "uniform"
             cfm = FlowMatching(
                 sourceloader=sourceloader,
                 targetloader=targetloader,
@@ -634,7 +633,7 @@ def main():
         
             optimizer = torch.optim.AdamW(
                 flow_model.parameters(), 
-                lr=1e-4, 
+                lr=5e-4, 
                 weight_decay=1e-5,
                 betas=(0.9, 0.95)
             )
