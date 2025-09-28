@@ -20,10 +20,10 @@ from flow_matching import FlowMatching, WeightSpaceFlowModel
 from canonicalization import get_permuted_models_data
 
 
-np.random.seed(16)
-torch.manual_seed(16)
+np.random.seed(42)
+torch.manual_seed(42)
 if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(16)
+    torch.cuda.manual_seed_all(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_config(config_file='constants.json'):
