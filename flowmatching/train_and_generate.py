@@ -262,7 +262,7 @@ def train_and_generate(args):
                 chunk_size = 5
                 for i in range(0, n_samples, chunk_size):
                     batch = random_flat[i:i+chunk_size].to(device)
-                    gen = cfm.map(batch, n_steps=100, method=gen_method)
+                    gen = cfm.map(batch, n_steps=100, method=model_config['integration_steps'])
                     generated_chunks.append(gen.cpu())
                 generated_flat = torch.cat(generated_chunks, dim=0)
                 
