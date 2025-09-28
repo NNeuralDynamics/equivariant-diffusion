@@ -258,6 +258,7 @@ def train_and_generate(args):
             
             # -------------------- ViT --------------------
             elif "vit" in args.model:
+                reference_ws = org_models[0]
                 generated_chunks = []
                 chunk_size = 5
                 for i in range(0, n_samples, chunk_size):
