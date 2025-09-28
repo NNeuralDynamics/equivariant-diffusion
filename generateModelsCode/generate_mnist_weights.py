@@ -10,7 +10,6 @@ import sys
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(stream=sys.stdout, format='%(asctime)s %(levelname)s: %(message)s', level=logging.INFO, datefmt='%I:%M:%S')
 
-# ---- Dataset ----
 def get_mnist_loaders(batch_size=64):
     transform = transforms.Compose([transforms.ToTensor()])
     train_ds = datasets.MNIST(root="data", train=True, download=True, transform=transform)
@@ -57,14 +56,12 @@ class MLP(nn.Module):
         x = self.fc3(x)
         return x
 
-# ---- Training ----
 def train_model(seed, train_loader, test_loader, epochs=5, lr=0.001, save_dir="mnist_models"):
     torch.manual_seed(seed)
     model = MLP(seed=seed)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    # Training loop
     for epoch in range(epochs):
         model.train()
         for xb, yb in train_loader:
@@ -74,7 +71,6 @@ def train_model(seed, train_loader, test_loader, epochs=5, lr=0.001, save_dir="m
             loss.backward()
             optimizer.step()
 
-    # Evaluation
     model.eval()
     correct, total = 0, 0
     with torch.no_grad():
