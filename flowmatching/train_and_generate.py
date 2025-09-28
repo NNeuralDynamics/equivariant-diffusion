@@ -258,20 +258,25 @@ def train_and_generate(args):
             
             # -------------------- ViT --------------------
             elif "vit" in args.model:
+                reference_ws = org_models[0]
                 generated_chunks = []
                 chunk_size = 5
                 for i in range(0, n_samples, chunk_size):
                     batch = random_flat[i:i+chunk_size].to(device)
-                    gen = cfm.map(batch, n_steps=100, method=gen_method)
+                    gen = cfm.map(batch, n_steps=100, method=model_config['integration_method'])
                     generated_chunks.append(gen.cpu())
                 generated_flat = torch.cat(generated_chunks, dim=0)
+                
+                if ipca is not None:
+                    generated_flat = ipca.inverse_transform(generated_flat.cpu().numpy())
+                    generated_flat = torch.tensor(generated_flat, dtype=torch.float32, device=device)
                 
                 for i in range(n_samples):
                     generated_ws = VisionTransformerWeightSpace.from_flat(
                         generated_flat[i], reference_ws, device
                     )
                     
-                    new_model = create_vit_small(**vit_config).to(device)
+                    new_model = create_vit_small().to(device)
                     generated_ws.apply_to_model(new_model)
                     generated_models.append(new_model)
                     del new_model
