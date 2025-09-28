@@ -10,9 +10,6 @@ from tqdm import tqdm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# ---------------------------
-# Multi-Head Attention
-# ---------------------------
 class MultiHeadAttention(nn.Module):
     def __init__(self, dim: int, num_heads: int = 6, dropout: float = 0.1):
         super().__init__()
@@ -39,9 +36,7 @@ class MultiHeadAttention(nn.Module):
         return x
 
 
-# ---------------------------
-# MLP Block
-# ---------------------------
+
 class MLP(nn.Module):
     def __init__(self, in_features: int, hidden_features: int = None,
                  out_features: int = None, dropout: float = 0.1):
@@ -62,9 +57,7 @@ class MLP(nn.Module):
         return x
 
 
-# ---------------------------
-# Transformer Block
-# ---------------------------
+
 class TransformerBlock(nn.Module):
     def __init__(self, dim: int, num_heads: int = 6, mlp_ratio: float = 4.0, dropout: float = 0.1):
         super().__init__()
@@ -79,9 +72,6 @@ class TransformerBlock(nn.Module):
         return x
 
 
-# ---------------------------
-# Patch Embedding
-# ---------------------------
 class PatchEmbed(nn.Module):
     def __init__(self, img_size: int = 32, patch_size: int = 4,
                  in_chans: int = 3, embed_dim: int = 384):
@@ -93,14 +83,11 @@ class PatchEmbed(nn.Module):
                               kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.proj(x)  # B, C, H/patch, W/patch
+        x = self.proj(x) 
         x = x.flatten(2).transpose(1, 2)  # B, N, C
         return x
 
 
-# ---------------------------
-# Vision Transformer (Small)
-# ---------------------------
 class VisionTransformer(nn.Module):
     def __init__(self,
                  img_size: int = 32,
@@ -167,9 +154,6 @@ def create_vit_small_patch4(num_classes: int = 10) -> VisionTransformer:
     )
 
 
-# ---------------------------
-# CIFAR-10 Data
-# ---------------------------
 def load_cifar10(batch_size=128):
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
@@ -189,10 +173,6 @@ def load_cifar10(batch_size=128):
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=2)
     return train_loader, test_loader
 
-
-# ---------------------------
-# Training Loop
-# ---------------------------
 def train(model, train_loader, optimizer, criterion, scheduler, device):
     model.train()
     total_loss, correct, total = 0, 0, 0
@@ -225,9 +205,6 @@ def evaluate(model, test_loader, device):
     return correct / total
 
 
-# ---------------------------
-# Main: Train 100 models w/ different seeds
-# ---------------------------
 def main():
     os.makedirs('cifar10_vit_small_patch4_models', exist_ok=True)
     batch_size = 128

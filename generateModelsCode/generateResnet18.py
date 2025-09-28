@@ -9,11 +9,9 @@ import sys
 import logging
 from tqdm import tqdm
 
-# ------------------- Logging and Device -------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(stream=sys.stdout, format='%(asctime)s %(levelname)s: %(message)s', level=logging.INFO, datefmt='%I:%M:%S')
 
-# ------------------- Dataset -------------------
 def get_cifar10_loaders(batch_size=128):
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
@@ -36,7 +34,6 @@ def get_cifar10_loaders(batch_size=128):
     
     return train_loader, test_loader
 
-# ------------------- Model -------------------
 def get_resnet18(num_classes=10, pretrained=False):
     model = torchvision.models.resnet18(weights=None if not pretrained else "IMAGENET1K_V1")
     model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
@@ -44,7 +41,6 @@ def get_resnet18(num_classes=10, pretrained=False):
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model.to(device)
 
-# ------------------- Training with Gradient Accumulation & Early Stopping -------------------
 def train_resnet18(seed, train_loader, test_loader, epochs=100, lr=0.1, save_dir="cifar10_models", accum_steps=4, patience=20):
     torch.manual_seed(seed)
     model = get_resnet18()
@@ -77,7 +73,6 @@ def train_resnet18(seed, train_loader, test_loader, epochs=100, lr=0.1, save_dir
         
         scheduler.step()
         
-        # ------------------- Evaluate -------------------
         model.eval()
         correct, total = 0, 0
         with torch.no_grad():
@@ -89,7 +84,6 @@ def train_resnet18(seed, train_loader, test_loader, epochs=100, lr=0.1, save_dir
         acc = correct / total
         logging.info(f"Epoch [{epoch+1}/{epochs}] Loss: {running_loss/len(train_loader):.4f}, Test Accuracy: {acc:.4f}")
         
-        # ------------------- Early Stopping -------------------
         if acc > best_acc:
             best_acc = acc
             best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -100,11 +94,9 @@ def train_resnet18(seed, train_loader, test_loader, epochs=100, lr=0.1, save_dir
                 logging.info(f"Early stopping triggered at epoch {epoch+1}")
                 break
     
-    # Save best model
     torch.save(best_model_state, f"{save_dir}/resnet18_seed{seed}.pt")
     logging.info(f"Best Test Accuracy={best_acc:.4f} for seed={seed}")
 
-# ------------------- Main -------------------
 if __name__ == "__main__":
     train_loader, test_loader = get_cifar10_loaders(batch_size=128)
     

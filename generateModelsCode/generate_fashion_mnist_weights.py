@@ -11,7 +11,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logging.basicConfig(stream=sys.stdout, format='%(asctime)s %(levelname)s: %(message)s',
                     level=logging.INFO, datefmt='%I:%M:%S')
 
-# ---- Dataset ----
 def get_fashion_mnist_loaders(batch_size=128):
     transform = transforms.Compose([transforms.ToTensor()])
     train_ds = datasets.FashionMNIST(root="data", train=True, download=True, transform=transform)
@@ -20,7 +19,6 @@ def get_fashion_mnist_loaders(batch_size=128):
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
     return train_loader, test_loader
-
 
 class MLP(nn.Module):
     def __init__(self, init_type='he', seed=None):
@@ -50,8 +48,6 @@ class MLP(nn.Module):
         x = self.fc3(x)
         return x
 
-
-# ---- Training ----
 def train(model, train_loader, optimizer, criterion, device, scaler, max_grad_norm=1.0):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
@@ -107,7 +103,6 @@ def train_model(seed, train_loader, test_loader, epochs=25, lr=1e-3, save_dir="f
         logging.info(f"Seed:{seed} Epoch:{epoch} Train Loss:{train_loss:.4f} "
                      f"Train Acc:{train_acc:.4f} Val Acc:{val_acc:.4f}")
 
-        # Early stopping
         if val_acc > best_acc:
             best_acc = val_acc
             patience_counter = 0

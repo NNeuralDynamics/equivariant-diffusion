@@ -7,27 +7,22 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import TensorDataset, DataLoader
 import os
 
-# 1. Load dataset
 iris = load_iris()
-X, y = iris.data, iris.target  # X shape: (150, 4), y shape: (150,)
+X, y = iris.data, iris.target
 
-# 2. Train-test split
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-# 3. Normalize features
 scaler = StandardScaler()
 X_train = scaler.fit_transform(X_train)
 X_test = scaler.transform(X_test)
 
-# 4. Convert to tensors
 X_train = torch.tensor(X_train, dtype=torch.float32)
 X_test = torch.tensor(X_test, dtype=torch.float32)
 y_train = torch.tensor(y_train, dtype=torch.long)
 y_test = torch.tensor(y_test, dtype=torch.long)
 
-# 5. Create DataLoader
 train_ds = TensorDataset(X_train, y_train)
 test_ds = TensorDataset(X_test, y_test)
 train_loader = DataLoader(train_ds, batch_size=16, shuffle=True)
