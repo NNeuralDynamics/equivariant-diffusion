@@ -631,7 +631,7 @@ def main():
     parser.add_argument(
         '--num_models', 
         type=int, 
-        default=100, 
+        default=5, 
         help='Number of pretrained models to use'
     )
     parser.add_argument(

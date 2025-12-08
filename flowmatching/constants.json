@@ -17,7 +17,7 @@
       "n_samples": 100,
       "integration_steps": 100,
       "integration_method": "rk4",
-      "use_pca": false,
+      "use_pca": true,
       "pca_components": 99,
       "pretrained_model_name": "mlp_seed",
       "training_modes": ["with_gitrebasin", "without_rebasin"]
@@ -39,7 +39,7 @@
       "n_samples": 100,
       "integration_steps": 100,
       "integration_method": "rk4",
-      "use_pca": false,
+      "use_pca": true,
       "pca_components": 99,
       "pretrained_model_name": "mlp_seed",
       "training_modes": ["with_gitrebasin", "without_rebasin"]
@@ -155,7 +155,7 @@
       "n_iters": 30000,
       "sigma": 0.001,
       "patience": 100,
-      "n_samples": 100,
+      "n_samples": 1,
       "integration_steps": 100,
       "integration_method": "rk4"
     }
