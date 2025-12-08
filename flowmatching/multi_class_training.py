@@ -346,9 +346,7 @@ def train_standard_model(config, model_config, model_dir, test_loader, model_nam
 
     # Train with different hidden dimensions
     for hidden_dim in model_config['flow_hidden_dims']:
-        print(f"\n{'='*60}")
         print(f"Training with hidden_dim={hidden_dim}")
-        print(f"{'='*60}")
 
         # Train with/without weight matching
         for training_mode in model_config.get('training_modes', config['training_modes']):
@@ -572,11 +570,9 @@ def train_standard_model(config, model_config, model_dir, test_loader, model_nam
             print(f"\nEvaluating {len(generated_models)} generated models...")
             mean_acc, std_acc = print_stats(generated_models, test_loader, device)
             
-            print(f"\n{'='*60}")
             print(f"Results for {training_mode} with hidden_dim={hidden_dim}:")
             print(f"  Mean Accuracy: {mean_acc:.4f}%")
             print(f"  Std Accuracy:  {std_acc:.4f}%")
-            print(f"{'='*60}\n")
 
             del flow_model, cfm, generated_models, optimizer, scheduler
             torch.cuda.empty_cache()
@@ -594,16 +590,13 @@ def train_and_generate(model_name, config_file='constants.json'):
     model_config = config['models'][model_name]
     model_dir = config['directories'][model_name]
 
-    print(f"\n{'='*60}")
     print(f"Training Flow Matching for {model_name}")
-    print(f"{'='*60}")
     print(f"\nConfiguration:")
     for key, value in model_config.items():
         print(f"  {key}: {value}")
     print(f"\nGlobal settings:")
     print(f"  num_models: {config['global_settings']['num_models']}")
     print(f"  ref_point: {config['global_settings']['ref_point']}")
-    print(f"{'='*60}\n")
 
     # Load test data
     test_loader = get_data_loader(model_config['dataset'], batch_size=32)
