@@ -38,7 +38,7 @@ The system learns to generate functional neural network weights by:
 ### Transformer Models (ViT, BERT)
 - **Weight Matching**: TransFusion (two-level attention head matching)
 - **PCA**: 
-  - **ViT**: Optional (similar to ResNet)
+  - **ViT**: Optional
   - **BERT**: Required with GPU-accelerated streaming PCA
 - **Flow Model**: `VisionTransformerFlowModel` (deeper architecture)
 - **Training**: Always uses alignment (TransFusion)
@@ -592,4 +592,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Git Re-Basin algorithm based on [Ainsworth et al., 2022]
 - TransFusion alignment for transformers
 - Flow matching framework inspired on recent developments in generative modeling
-- GPU-accelerated PCA implementation for efficient large-scale processing
