@@ -1,12 +1,10 @@
-import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-from dataclasses import dataclass
+import os
 from typing import Optional, Tuple
-import torchvision
-from typing import Tuple 
+from dataclasses import dataclass
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -374,3 +372,150 @@ def create_vit_small(num_classes: int = 10, **kwargs) -> VisionTransformer:
     defaults.update(kwargs)
     
     return VisionTransformer(**defaults)
+
+
+# --------------------------------------- BERT Transformer Definition ---------------------------------------
+
+class BertMultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.1):
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x, mask=None):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)
+        if mask is not None:
+            attn = attn.masked_fill(mask == 0, float('-inf'))
+        attn = F.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.dropout(x)
+        return x
+
+
+class FeedForward(nn.Module):
+    def __init__(self, embed_dim, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(embed_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x):
+        x = self.fc1(x)
+        x = F.gelu(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        x = self.dropout(x)
+        return x
+
+
+class BertTransformerBlock(nn.Module):
+    def __init__(self, embed_dim, num_heads, mlp_ratio=4, dropout=0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = BertMultiHeadAttention(embed_dim, num_heads, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.mlp = FeedForward(embed_dim, int(embed_dim * mlp_ratio), dropout)
+        
+    def forward(self, x, mask=None):
+        x = x + self.attn(self.norm1(x), mask)
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class BERTTransformer(nn.Module):
+    def __init__(self, vocab_size=30522, max_seq_len=128, embed_dim=512, 
+                 num_heads=8, num_layers=8, num_classes=1, dropout=0.1):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.token_embed = nn.Embedding(vocab_size, embed_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, max_seq_len, embed_dim))
+        self.dropout = nn.Dropout(dropout)
+        self.blocks = nn.ModuleList([
+            BertTransformerBlock(embed_dim, num_heads, dropout=dropout)
+            for _ in range(num_layers)
+        ])
+        self.norm = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, num_classes)
+        self._init_weights()
+        
+    def _init_weights(self):
+        nn.init.normal_(self.token_embed.weight, std=0.02)
+        nn.init.normal_(self.pos_embed, std=0.02)
+        nn.init.normal_(self.head.weight, std=0.02)
+        nn.init.zeros_(self.head.bias)
+        
+    def forward(self, input_ids, mask=None):
+        B, N = input_ids.shape
+        x = self.token_embed(input_ids)
+        x = x + self.pos_embed[:, :N, :]
+        x = self.dropout(x)
+        for block in self.blocks:
+            x = block(x, mask)
+        x = self.norm(x)
+        x = x[:, 0]
+        x = self.head(x)
+        return x
+
+
+def create_bert_100m(num_classes=1):
+    return BERTTransformer(
+        vocab_size=30522,
+        max_seq_len=128,
+        embed_dim=768,
+        num_heads=12,
+        num_layers=12,
+        num_classes=num_classes,
+        dropout=0.05
+    )
+
+class BERTAttentionWeights:
+    """Weight space object for BERT attention layers"""
+    def __init__(self, qkv_weight, qkv_bias, proj_weight, proj_bias, num_heads):
+        self.qkv_weight = qkv_weight
+        self.qkv_bias = qkv_bias
+        self.proj_weight = proj_weight
+        self.proj_bias = proj_bias
+        self.num_heads = num_heads
+        
+    def split_heads(self):
+        """Split QKV weights into per-head Q, K, V matrices"""
+        embed_dim = self.qkv_weight.shape[1]
+        head_dim = embed_dim // self.num_heads
+        
+        qkv = self.qkv_weight.reshape(3, embed_dim, embed_dim)
+        q_weight, k_weight, v_weight = qkv[0], qkv[1], qkv[2]
+        
+        q_heads = q_weight.reshape(self.num_heads, head_dim, embed_dim)
+        k_heads = k_weight.reshape(self.num_heads, head_dim, embed_dim)
+        v_heads = v_weight.reshape(self.num_heads, head_dim, embed_dim)
+        
+        return q_heads, k_heads, v_heads
+
+class BERTTransformerBlockWeights:
+    """
+    Weight space object for a BERT transformer block
+    """
+    def __init__(self, attention, norm1_weight, norm1_bias, 
+                 mlp_weights, mlp_biases,
+                 norm2_weight, norm2_bias):
+        self.attention = attention
+        self.norm1_weight = norm1_weight
+        self.norm1_bias = norm1_bias
+        self.mlp_weights = mlp_weights
+        self.mlp_biases = mlp_biases
+        self.norm2_weight = norm2_weight
+        self.norm2_bias = norm2_bias

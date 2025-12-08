@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
 import logging
-import traceback
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 from utils import Bunch
+
 
 class FlowMatching:
     def __init__(
@@ -30,7 +29,6 @@ class FlowMatching:
 
         self.best_loss = float('inf')
         self.best_model_state = None
-
         self.input_dim = None
 
     def sample_from_loader(self, loader):
@@ -90,12 +88,7 @@ class FlowMatching:
 
     def train(self, n_iters=10, optimizer=None, scheduler=None, sigma=0.001, patience=1e99, 
           log_freq=5, accum_steps=None):
-        """
-        Train the flow model with optional gradient accumulation.
-        
-        Args:
-            accum_steps: Number of steps to accumulate gradients. If None, no accumulation.
-        """
+        """Train with optional gradient accumulation"""
         self.sigma = sigma
         last_loss = 1e99
         patience_count = 0
@@ -116,10 +109,7 @@ class FlowMatching:
                 logging.info(f"Skipping step {i} due to invalid loss: {loss.item()}")
                 continue
             
-            if use_grad_accum:
-                loss_scaled = loss / effective_accum_steps
-            else:
-                loss_scaled = loss
+            loss_scaled = loss / effective_accum_steps if use_grad_accum else loss
             
             loss_scaled.backward()
             accum_count += 1
@@ -149,19 +139,16 @@ class FlowMatching:
                     patience_count = 0
                 
                 last_loss = avg_loss
-                
                 accum_count = 0
                 accumulated_loss = 0
             
             if i % log_freq == 0:
-                true_tensor = flow.ut if self.mode == "velocity" else flow.x1                
-                display_loss = loss.item()                
+                display_loss = loss.item()
                 desc = f"Iters [loss {display_loss:.6f}"
                 if use_grad_accum:
                     desc += f", accum {accum_count}/{effective_accum_steps}"
                 desc += "]"
                 pbar.set_description(desc)
-                    
         
         if use_grad_accum and accum_count > 0:
             optimizer.step()
@@ -185,6 +172,7 @@ class FlowMatching:
                 pred = self.model(xt, t_tensor)
                 if pred.dim() > 2: pred = pred.squeeze(-1)
                 vt = pred if self.mode == "velocity" else pred - xt
+                
                 if method == "euler":
                     xt = xt + vt * dt
                 elif method == "rk4":
@@ -213,8 +201,10 @@ class FlowMatching:
         source_samples = torch.randn(n_samples, self.input_dim, device=self.device) * source_noise_std
         return self.map(source_samples, **map_kwargs)
 
+
 class WeightSpaceFlowModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, dropout=0.1,time_embed_dim=64):
+    """Standard flow model for weight space"""
+    def __init__(self, input_dim, hidden_dim, dropout=0.1, time_embed_dim=64):
         super().__init__()
         self.input_dim = input_dim
         self.time_embed_dim = time_embed_dim
@@ -224,8 +214,6 @@ class WeightSpaceFlowModel(nn.Module):
             nn.GELU(),
             nn.Linear(time_embed_dim, time_embed_dim)
         )
-        
-        logging.info(f"hidden_dim:{hidden_dim}")
         
         self.net = nn.Sequential(
             nn.Linear(input_dim + time_embed_dim, hidden_dim),
@@ -247,6 +235,56 @@ class WeightSpaceFlowModel(nn.Module):
         
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
+    
+    def forward(self, x, t):
+        t_embed = self.time_embed(t)
+        combined = torch.cat([x, t_embed], dim=-1)
+        return self.net(combined)
+
+
+class VisionTransformerFlowModel(nn.Module):
+    """Flow model specifically designed for Vision Transformers and BERT"""
+    def __init__(self, input_dim, hidden_dim, dropout=0.1, time_embed_dim=64):
+        super().__init__()
+        self.input_dim = input_dim
+        self.time_embed_dim = time_embed_dim
+        
+        # Time embedding
+        self.time_embed = nn.Sequential(
+            nn.Linear(1, time_embed_dim),
+            nn.GELU(),
+            nn.Linear(time_embed_dim, time_embed_dim)
+        )
+        
+        # Deeper network for complex transformer weight spaces
+        self.net = nn.Sequential(
+            nn.Linear(input_dim + time_embed_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim), 
+            nn.GELU(),
+            nn.Dropout(dropout),
+            
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            
+            nn.Linear(hidden_dim // 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            
+            nn.Linear(hidden_dim, input_dim)
+        )
+        
+        # Zero initialization for stability
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+        
+        logging.info(f"VisionTransformerFlowModel: input_dim={input_dim}, hidden_dim={hidden_dim}")
     
     def forward(self, x, t):
         t_embed = self.time_embed(t)

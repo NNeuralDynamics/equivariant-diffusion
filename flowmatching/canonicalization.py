@@ -3,11 +3,13 @@ import numpy as np
 import os
 import copy
 from tqdm import tqdm
-from typing import Dict, Any, List, Tuple, Optional
 from scipy.optimize import linear_sum_assignment
 from permutation_specs import *
 from models import MLP_MNIST, MLP_Fashion_MNIST, MLP_Iris, ResNet20, get_resnet18, create_vit_small
-from utils import VisionTransformerWeightSpace
+from weight_space_objects import VisionTransformerWeightSpace, BERTWeightSpace
+from models import BERTAttentionWeights, BERTTransformerBlockWeights, create_bert_100m
+from typing import Any, List, Tuple, Optional
+import gc 
 
 def get_permuted_param(ps, perm, wk, params_b, except_axis=None):
     w = params_b[wk]
@@ -85,13 +87,17 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, max_iter=100, init_
 
 class TransFusionMatcher:
     """
-    Weight matching using TransFusion approach for Vision Transformers
+    Weight matching using TransFusion approach for Transformers
     """
     
-    def __init__(self, num_iterations: int = 5, epsilon: float = 1e-8):
+    def __init__(self, num_iterations: int = 5, epsilon: float = 1e-8, model_type: str = 'vit'):
         self.num_iterations = num_iterations
         self.epsilon = epsilon
+        self.model_type = model_type.lower()
         
+        if self.model_type not in ['vit', 'bert']:
+            raise ValueError(f"model_type must be 'vit' or 'bert', got '{model_type}'")
+    
     def compute_spectral_distance(self, weight1: torch.Tensor, weight2: torch.Tensor) -> float:
         """Compute permutation-invariant distance using singular values"""
         try:
@@ -110,10 +116,10 @@ class TransFusionMatcher:
             s2 = torch.cat([s2, torch.zeros(max_len - len(s2))])
         
         return torch.norm(s1 - s2).item()
-    
+
     def compose_attention_permutation(self, inter_head_perm: torch.Tensor,
-                                     intra_head_perms: List[torch.Tensor],
-                                     d_model: int, num_heads: int) -> torch.Tensor:
+                                    intra_head_perms: List[torch.Tensor],
+                                    d_model: int, num_heads: int) -> torch.Tensor:
         """Compose inter and intra head permutations into a single block diagonal matrix"""
         head_dim = d_model // num_heads
         P_attn = torch.zeros(d_model, d_model)
@@ -130,7 +136,7 @@ class TransFusionMatcher:
             P_attn[start_i:end_i, start_j:end_j] = P_intra
         
         return P_attn
-    
+
     def match_attention_heads(self, attn1, attn2) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         """Two-level matching for attention heads"""
         q1, k1, v1 = attn1.split_heads()
@@ -172,9 +178,9 @@ class TransFusionMatcher:
         )
         
         return inter_head_perm, intra_head_perms, composed_perm
-    
+
     def match_mlp_layer(self, weight1: torch.Tensor, weight2: torch.Tensor,
-                       prev_perm: Optional[torch.Tensor] = None) -> torch.Tensor:
+                    prev_perm: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Match MLP layers using Hungarian algorithm"""
         device = weight1.device
         
@@ -198,7 +204,6 @@ class TransFusionMatcher:
     
     def apply_permutation_to_weights(self, weights, perm_spec) -> Any:
         """Apply computed permutations to weight space"""
-        from permutation_specs import ViTPermutationSpec
         result = copy.deepcopy(weights)
         
         prev_output_perm = None
@@ -260,7 +265,14 @@ class TransFusionMatcher:
     
     def canonicalize_model(self, models: List[Any], reference_idx: int = 0) -> List[Any]:
         """Canonicalize multiple models using one as reference"""
-        from permutation_specs import ViTPermutationSpec
+        # Import the appropriate PermutationSpec based on model type
+        if self.model_type == 'vit':
+            from permutation_specs import ViTPermutationSpec
+            PermutationSpec = ViTPermutationSpec
+        else:  # bert
+            from permutation_specs import BERTPermutationSpec
+            PermutationSpec = BERTPermutationSpec
+        
         reference = models[reference_idx]
         canonicalized = []
         
@@ -268,7 +280,7 @@ class TransFusionMatcher:
             if i == reference_idx:
                 canonicalized.append(reference)
             else:
-                perm_spec = ViTPermutationSpec(len(model.blocks))
+                perm_spec = PermutationSpec(len(model.blocks))
                 current_model = copy.deepcopy(model)
                 
                 for iteration in range(self.num_iterations):
@@ -295,7 +307,6 @@ class TransFusionMatcher:
                             current_dim_perm = torch.eye(d_model)
                     
                     current_model = self.apply_permutation_to_weights(current_model, perm_spec)
-
                 
                 canonicalized.append(current_model)
         
@@ -318,50 +329,271 @@ def get_model_and_spec(model_name: str, device=None):
     else:
         raise ValueError(f"Unknown model name: {model_name}")
 
+def aggressive_cleanup():
+    """Force garbage collection and GPU memory cleanup"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+def move_weight_space_to_cpu(ws):
+    """
+    Move to CPU without deep copy when possible
+    """
+    # Create new weight space with CPU tensors (no deepcopy)
+    blocks_cpu = []
+    for block in ws.blocks:
+        # Create new block objects but share structure
+        attn_cpu = BERTAttentionWeights(
+            qkv_weight=block.attention.qkv_weight.cpu(),
+            qkv_bias=block.attention.qkv_bias.cpu() if block.attention.qkv_bias is not None else None,
+            proj_weight=block.attention.proj_weight.cpu(),
+            proj_bias=block.attention.proj_bias.cpu() if block.attention.proj_bias is not None else None,
+            num_heads=block.attention.num_heads
+        )
+        
+        block_cpu = BERTTransformerBlockWeights(
+            attention=attn_cpu,
+            norm1_weight=block.norm1_weight.cpu(),
+            norm1_bias=block.norm1_bias.cpu(),
+            mlp_weights=tuple(w.cpu() for w in block.mlp_weights),
+            mlp_biases=tuple(b.cpu() for b in block.mlp_biases),
+            norm2_weight=block.norm2_weight.cpu(),
+            norm2_bias=block.norm2_bias.cpu()
+        )
+        blocks_cpu.append(block_cpu)
+    
+    return BERTWeightSpace(
+        token_embed=ws.token_embed.cpu(),
+        pos_embed=ws.pos_embed.cpu(),
+        blocks=blocks_cpu,
+        norm_weight=ws.norm_weight.cpu(),
+        norm_bias=ws.norm_bias.cpu(),
+        head_weight=ws.head_weight.cpu(),
+        head_bias=ws.head_bias.cpu()
+    )
+
+
+def move_weight_space_to_device(ws_cpu, device):
+    # Create new blocks without deepcopy
+    blocks_dev = []
+    for block_cpu in ws_cpu.blocks:
+        attn_dev = BERTAttentionWeights(
+            qkv_weight=block_cpu.attention.qkv_weight.to(device),
+            qkv_bias=block_cpu.attention.qkv_bias.to(device) if block_cpu.attention.qkv_bias is not None else None,
+            proj_weight=block_cpu.attention.proj_weight.to(device),
+            proj_bias=block_cpu.attention.proj_bias.to(device) if block_cpu.attention.proj_bias is not None else None,
+            num_heads=block_cpu.attention.num_heads
+        )
+        
+        block_dev = BERTTransformerBlockWeights(
+            attention=attn_dev,
+            norm1_weight=block_cpu.norm1_weight.to(device),
+            norm1_bias=block_cpu.norm1_bias.to(device),
+            mlp_weights=tuple(w.to(device) for w in block_cpu.mlp_weights),
+            mlp_biases=tuple(b.to(device) for b in block_cpu.mlp_biases),
+            norm2_weight=block_cpu.norm2_weight.to(device),
+            norm2_bias=block_cpu.norm2_bias.to(device)
+        )
+        blocks_dev.append(block_dev)
+    
+    return BERTWeightSpace(
+        token_embed=ws_cpu.token_embed.to(device),
+        pos_embed=ws_cpu.pos_embed.to(device),
+        blocks=blocks_dev,
+        norm_weight=ws_cpu.norm_weight.to(device),
+        norm_bias=ws_cpu.norm_bias.to(device),
+        head_weight=ws_cpu.head_weight.to(device),
+        head_bias=ws_cpu.head_bias.to(device)
+    )
+
+def flatten_weights_in_batches(weight_space_objects, batch_size=10, device='cpu'):
+    """Process weights in batches to avoid OOM"""
+    all_flat_weights = []
+    num_batches = (len(weight_space_objects) + batch_size - 1) // batch_size
+    
+    print(f"Flattening {len(weight_space_objects)} weight spaces in {num_batches} batches...")
+    
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(weight_space_objects))
+        batch = weight_space_objects[start_idx:end_idx]
+        
+        batch_flat = []
+        for ws in batch:
+            try:
+                flat = ws.flatten(device=device)
+                batch_flat.append(flat)
+                del flat
+            except Exception as e:
+                print(f"Error flattening weight space: {e}")
+                continue
+        
+        all_flat_weights.extend(batch_flat)
+        
+        # Clean up after each batch
+        del batch, batch_flat
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        if (batch_idx + 1) % 5 == 0:
+            print(f"Processed batch {batch_idx + 1}/{num_batches}")
+    
+    return all_flat_weights
 
 def apply_transfusion(model_dir, num_models, pretrained_model_name, ref_point=0, device=None):
-    """Load and align ViT models using TransFusion"""
+    """
+    Load and align models using TransFusion (always applies rebasin).
+    Automatically detects model type (ViT or BERT) from pretrained_model_name.
+    
+    Args:
+        model_dir: Directory containing model checkpoints
+        num_models: Number of models to process
+        pretrained_model_name: Base name of model files (should contain 'vit' or 'bert')
+        ref_point: Index of reference model
+        device: Device to use (None = auto-detect)
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    ref_model = create_vit_small().to(device)
-    ref_model_path = f"{model_dir}/{pretrained_model_name}{ref_point}.pt"
+    # Detect model type from name
+    model_name_lower = pretrained_model_name.lower()
+    if 'bert' in model_name_lower:
+        model_type = 'bert'
+    elif 'vit' in model_name_lower:
+        model_type = 'vit'
+    else:
+        raise ValueError(f"Cannot determine model type from name '{pretrained_model_name}'. "
+                        f"Name must contain 'bert' or 'vit'")
     
-    try:
-        ref_model.load_state_dict(torch.load(ref_model_path, map_location=device))
-        print(f"Loaded reference model from {ref_model_path}")
-    except Exception as e:
-        print(f"Failed to load reference model: {e}")
-        raise e
+    print(f"Detected model type: {model_type.upper()}")
+    org_weight_space_objects = []
     
-    ref_ws = VisionTransformerWeightSpace.from_vit_model(ref_model)
-    weight_space_objects = [ref_ws]
-    org_weight_space_objects = [ref_ws]
+    if model_type == 'bert':
+        ref_model = create_bert_100m(num_classes=1).to(device)
+        ref_model_path = f"{model_dir}/{pretrained_model_name}{ref_point}_best.pt"
+        
+        try:
+            ref_model.load_state_dict(torch.load(ref_model_path, map_location=device))
+            print(f"Loaded reference BERT model from {ref_model_path}")
+        except Exception as e:
+            print(f"Failed to load reference model: {e}")
+            raise e
+        
+        ref_ws = BERTWeightSpace.from_bert_model(ref_model)
+        ref_ws_cpu = move_weight_space_to_cpu(ref_ws)
+        
+        weight_space_objects = [ref_ws_cpu]
+        org_weight_space_objects = [ref_ws_cpu] # This is recommended to comment this off and either fetch only canonicalized or non canonicalized models trying to fetch both for BERT can lead to memory issues
+        
+        # Aggressive cleanup
+        del ref_model, ref_ws
+        aggressive_cleanup()
+        
+        matcher = TransFusionMatcher(num_iterations=2, model_type='bert')
+        
+        for i in tqdm(range(num_models), desc="Processing BERT models"):
+            if i == ref_point:
+                continue
+            
+            model_path = f"{model_dir}/{pretrained_model_name}{i}_best.pt"
+            if not os.path.exists(model_path):
+                print(f"Skipping model {i} - file not found")
+                continue
+            
+            try:
+                # Load model on GPU
+                model = create_bert_100m(num_classes=1).to(device)
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                
+                # Extract weight space
+                ws = BERTWeightSpace.from_bert_model(model)
+                ws_cpu = move_weight_space_to_cpu(ws)
+                # This is recommended to comment this off and either fetch only canonicalized or non canonicalized models trying to fetch both for BERT can lead to memory issues, unfreeze it to fetch non canonicalized models but then comment out lines 519-529
+                # org_weight_space_objects.append(ws_cpu) 
+                
+                del model, ws
+                aggressive_cleanup()
+                
+                # Canonicalize (temporarily move to GPU)
+                ref_ws_gpu = move_weight_space_to_device(ref_ws_cpu, device)
+                ws_gpu = move_weight_space_to_device(ws_cpu, device)
+                
+                canonicalized_list = matcher.canonicalize_model([ref_ws_gpu, ws_gpu], reference_idx=0)
+                aligned_ws = canonicalized_list[1]
+                
+                # Move back to CPU and delete GPU versions
+                aligned_ws_cpu = move_weight_space_to_cpu(aligned_ws)
+                weight_space_objects.append(aligned_ws_cpu)
+                
+                del ws_cpu, ref_ws_gpu, ws_gpu, canonicalized_list, aligned_ws
+                aggressive_cleanup()
+                
+                if (i + 1) % 5 == 0:
+                    print(f"Processed {i+1}/{num_models} - Memory cleared")
+                    
+            except Exception as e:
+                print(f"Error processing model {i}: {str(e)}")
+                aggressive_cleanup()
+                continue
+        
+        print(f"Successfully processed {len(weight_space_objects)} BERT models")
+        aggressive_cleanup()
+        
+        return org_weight_space_objects, weight_space_objects
     
-    matcher = TransFusionMatcher(num_iterations=10)
-    
-    for i in tqdm(range(num_models), desc="Processing ViT models"):
-        if i == ref_point:
-            continue
+    # ========== ViT Processing ==========
+    else: 
+        ref_model = create_vit_small().to(device)
+        ref_model_path = f"{model_dir}/{pretrained_model_name}{ref_point}.pt"
         
-        model_path = f"{model_dir}/{pretrained_model_name}{i}.pt"
-        if not os.path.exists(model_path):
-            print(f"Skipping model {i} - file not found")
-            continue
+        try:
+            ref_model.load_state_dict(torch.load(ref_model_path, map_location=device))
+            print(f"Loaded reference ViT model from {ref_model_path}")
+        except Exception as e:
+            print(f"Failed to load reference model: {e}")
+            raise e
         
-        model = create_vit_small().to(device)
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        ref_ws = VisionTransformerWeightSpace.from_vit_model(ref_model)
+        weight_space_objects = [ref_ws]
+        org_weight_space_objects = [ref_ws]
         
-        ws = VisionTransformerWeightSpace.from_vit_model(model)
-        org_weight_space_objects.append(ws)
+        matcher = TransFusionMatcher(num_iterations=10, model_type='vit')
         
-        canonicalized_list = matcher.canonicalize_model([ref_ws, ws], reference_idx=0)
-        aligned_ws = canonicalized_list[1]
+        for i in tqdm(range(num_models), desc="Processing ViT models"):
+            if i == ref_point:
+                continue
+            
+            model_path = f"{model_dir}/{pretrained_model_name}{i}.pt"
+            if not os.path.exists(model_path):
+                print(f"Skipping model {i} - file not found")
+                continue
+            
+            try:
+                model = create_vit_small().to(device)
+                model.load_state_dict(torch.load(model_path, map_location=device))
+                
+                ws = VisionTransformerWeightSpace.from_vit_model(model)
+                
+                canonicalized_list = matcher.canonicalize_model([ref_ws, ws], reference_idx=0)
+                org_weight_space_objects.append(ws)
+
+                aligned_ws = canonicalized_list[1]
+                
+                weight_space_objects.append(aligned_ws)
+                
+                del model, ws, canonicalized_list
+                aggressive_cleanup()
+                    
+            except Exception as e:
+                print(f"Error processing model {i}: {str(e)}")
+                aggressive_cleanup()
+                continue
         
-        weight_space_objects.append(aligned_ws)
-    
-    print(f"Successfully processed {len(weight_space_objects)} ViT models")    
-    return ref_model, org_weight_space_objects, weight_space_objects
+        print(f"Successfully processed {len(weight_space_objects)} ViT models")
+        aggressive_cleanup()
+        
+        return org_weight_space_objects, weight_space_objects
 
 
 def _process_mlp_iris(model_name, model_dir, num_models, ref_seed, device, model_config=None):
@@ -472,7 +704,7 @@ def process_models(model_name, model_dir, pretrained_model_name, num_models, ref
         torch.cuda.empty_cache()
 
     print(f"Processed {len(permuted_models)} models successfully")
-    return ref_model, org_models, permuted_models
+    return org_models, permuted_models
 
 
 def get_permuted_models_data(
@@ -489,7 +721,7 @@ def get_permuted_models_data(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if "vit" in model_name.lower():
+    if "vit" in model_name.lower() or "bert" in model_name.lower():
         return apply_transfusion(model_dir, num_models, pretrained_model_name, ref_point, device)
 
     if "mlp" in model_name.lower():
@@ -497,3 +729,28 @@ def get_permuted_models_data(
             return _process_mlp_iris(model_name, model_dir, num_models, ref_point, device, model_config)
        
     return process_models(model_name, model_dir, pretrained_model_name, num_models, ref_point, device)
+
+def get_model_and_spec(model_name: str, device=None):
+    """Return model constructor and permutation spec based on model_name"""
+    from models import (MLP_MNIST, MLP_Fashion_MNIST, MLP_Iris, 
+                       ResNet20, get_resnet18)
+    from permutation_specs import (mnist_mlp_permutation_spec_mlp,
+                                   fashion_mnist_mlp_permutation_spec,
+                                   iris_mlp_permutation_spec_mlp,
+                                   resnet20_permutation_spec,
+                                   resnet18_permutation_spec)
+    
+    model_name = model_name.lower()
+    
+    if "mlp_mnist" in model_name and "fashion" not in model_name:
+        return MLP_MNIST().to(device), mnist_mlp_permutation_spec_mlp()
+    elif "mlp_fashion_mnist" in model_name:
+        return MLP_Fashion_MNIST().to(device), fashion_mnist_mlp_permutation_spec()
+    elif "mlp_iris" in model_name:
+        return MLP_Iris().to(device), iris_mlp_permutation_spec_mlp()
+    elif "resnet20" in model_name:
+        return ResNet20().to(device), resnet20_permutation_spec()
+    elif "resnet18" in model_name:
+        return get_resnet18().to(device), resnet18_permutation_spec()
+    else:
+        raise ValueError(f"Unknown model name: {model_name}")
