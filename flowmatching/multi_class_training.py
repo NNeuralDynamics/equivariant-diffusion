@@ -1063,7 +1063,7 @@ def main():
     parser.add_argument('--ref_point', type=int, default=0,
                        help='Reference model index for canonicalization')
     parser.add_argument('--hidden_dim', type=int, default=None,
-                       help='Specific hidden dimension (tests all if None)')
+                       help='Specific hidden dimension (Preferred 2048)')
     parser.add_argument('--mode', type=str, default=None,
                        choices=['with_gitrebasin', 'without_rebasin'],
                        help='Training mode (tests all if None)')
