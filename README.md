@@ -11,7 +11,7 @@ The system learns to generate functional neural network weights by:
    - **TransFusion** for Vision Transformers and BERT
 3. Applying dimensionality reduction:
    - **Optional PCA** for MLPs and ResNets (config-driven)
-   - **GPU-accelerated PCA** with automatic variance targeting for Transformers
+   - **Dual PCA** with automatic variance targeting for Transformers
 4. Learning a flow from noise to the weight distribution
 5. Generating new weight samples that achieve competitive performance
 
